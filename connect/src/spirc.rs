@@ -8,7 +8,9 @@ use protobuf::{self, Message};
 use rand;
 use rand::seq::SliceRandom;
 use serde_json;
-
+use notify::{Watcher, RecursiveMode, watcher, RecommendedWatcher, DebouncedEvent};
+use std::sync::mpsc::{channel, Receiver};
+use std::time::{Duration};
 use crate::context::StationContext;
 use crate::playback::mixer::Mixer;
 use crate::playback::player::{Player, PlayerEvent, PlayerEventChannel};
@@ -22,6 +24,7 @@ use librespot_core::util::url_encode;
 use librespot_core::util::SeqGenerator;
 use librespot_core::version;
 use librespot_core::volume::Volume;
+use std::fs;
 
 enum SpircPlayStatus {
     Stopped,
@@ -54,6 +57,10 @@ pub struct SpircTask {
     play_request_id: Option<u64>,
     mixer_started: bool,
     play_status: SpircPlayStatus,
+
+    volume_watcher: RecommendedWatcher,
+    external_volume_event: Receiver<DebouncedEvent>,
+
 
     subscription: Box<dyn Stream<Item = Frame, Error = MercuryError>>,
     sender: Box<dyn Sink<SinkItem = Frame, SinkError = MercuryError>>,
@@ -284,6 +291,10 @@ impl Spirc {
 
         let player_events = player.get_player_event_channel();
 
+        let (tx, rx) = channel();
+        let mut watcher = watcher(tx, Duration::from_secs(2)).unwrap();
+        watcher.watch("./vol_store", RecursiveMode::Recursive).unwrap();
+
         let mut task = SpircTask {
             player: player,
             mixer: mixer,
@@ -292,6 +303,8 @@ impl Spirc {
             sequence: SeqGenerator::new(1),
 
             ident: ident,
+            volume_watcher: watcher,
+            external_volume_event: rx,
 
             device: device,
             state: initial_state(),
@@ -381,6 +394,30 @@ impl Future for SpircTask {
                     Async::Ready(None) => (),
                     Async::NotReady => (),
                 }
+
+
+                match self.external_volume_event.try_recv() {
+                   Ok(event) => {
+                        match event {
+                            DebouncedEvent::NoticeWrite(_path) => {
+                                println!("write detected");
+                                let contents = fs::read_to_string("./vol_store").expect("Something went wrong reading the file");
+                                let volume = contents.parse::<u16>();
+                                match volume {
+                                    Ok(num)  => {
+                                        println!("Parsed volume from file {}", num);
+                                        self.set_volume(num)
+                                    },
+                                    Err(e) =>  println!("Could not parse volume from file!: {}. Contents: {}", e, contents),
+                                };
+
+                            },
+                            _ => {},
+                        }
+                   },
+                   Err(_e) => {},
+                }
+
 
                 match self.player_events.poll() {
                     Ok(Async::NotReady) => (),

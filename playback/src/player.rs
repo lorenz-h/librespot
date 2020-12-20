@@ -5,7 +5,7 @@ use std;
 use std::borrow::Cow;
 use std::cmp::max;
 use std::io::{Read, Result, Seek, SeekFrom};
-use std::mem;
+use std::{mem};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1547,6 +1547,8 @@ impl PlayerInternal {
             session: self.session.clone(),
             config: self.config.clone(),
         };
+
+
 
         let (result_tx, result_rx) = futures::sync::oneshot::channel();
 

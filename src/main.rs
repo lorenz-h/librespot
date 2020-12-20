@@ -407,6 +407,7 @@ struct Main {
 
 impl Main {
     fn new(handle: Handle, setup: Setup) -> Main {
+
         let mut task = Main {
             handle: handle.clone(),
             cache: setup.cache,
@@ -426,7 +427,6 @@ impl Main {
             last_credentials: None,
             auto_connect_times: Vec::new(),
             signal: Box::new(tokio_signal::ctrl_c().flatten_stream()),
-
             player_event_channel: None,
             player_event_program: setup.player_event_program,
             emit_sink_events: setup.emit_sink_events,
@@ -521,6 +521,7 @@ impl Future for Main {
                     self.connect = Box::new(futures::future::empty());
                 }
             }
+
 
             if let Async::Ready(Some(())) = self.signal.poll().unwrap() {
                 trace!("Ctrl-C received");
