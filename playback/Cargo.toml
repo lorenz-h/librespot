@@ -22,6 +22,7 @@ futures = "0.1"
 log = "0.4"
 byteorder = "1.3"
 shell-words = "1.0.0"
+notify = "4.0.12"
 
 alsa            = { version = "0.2", optional = true }
 portaudio-rs    = { version = "0.3", optional = true }

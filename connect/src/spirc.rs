@@ -8,9 +8,8 @@ use protobuf::{self, Message};
 use rand;
 use rand::seq::SliceRandom;
 use serde_json;
-use notify::{Watcher, RecursiveMode, watcher, RecommendedWatcher, DebouncedEvent};
-use std::sync::mpsc::{channel, Receiver};
-use std::time::{Duration};
+use serde::{Deserialize, Serialize};
+
 use crate::context::StationContext;
 use crate::playback::mixer::Mixer;
 use crate::playback::player::{Player, PlayerEvent, PlayerEventChannel};
@@ -24,7 +23,12 @@ use librespot_core::util::url_encode;
 use librespot_core::util::SeqGenerator;
 use librespot_core::version;
 use librespot_core::volume::Volume;
-use std::fs;
+
+#[derive(Serialize, Deserialize)]
+struct ExternalCommandFile {
+    volume: u16,
+    player_state: String,
+}
 
 enum SpircPlayStatus {
     Stopped,
@@ -57,10 +61,6 @@ pub struct SpircTask {
     play_request_id: Option<u64>,
     mixer_started: bool,
     play_status: SpircPlayStatus,
-
-    volume_watcher: RecommendedWatcher,
-    external_volume_event: Receiver<DebouncedEvent>,
-
 
     subscription: Box<dyn Stream<Item = Frame, Error = MercuryError>>,
     sender: Box<dyn Sink<SinkItem = Frame, SinkError = MercuryError>>,
@@ -291,10 +291,6 @@ impl Spirc {
 
         let player_events = player.get_player_event_channel();
 
-        let (tx, rx) = channel();
-        let mut watcher = watcher(tx, Duration::from_secs(2)).unwrap();
-        watcher.watch("./vol_store", RecursiveMode::Recursive).unwrap();
-
         let mut task = SpircTask {
             player: player,
             mixer: mixer,
@@ -303,8 +299,6 @@ impl Spirc {
             sequence: SeqGenerator::new(1),
 
             ident: ident,
-            volume_watcher: watcher,
-            external_volume_event: rx,
 
             device: device,
             state: initial_state(),
@@ -394,30 +388,6 @@ impl Future for SpircTask {
                     Async::Ready(None) => (),
                     Async::NotReady => (),
                 }
-
-
-                match self.external_volume_event.try_recv() {
-                   Ok(event) => {
-                        match event {
-                            DebouncedEvent::NoticeWrite(_path) => {
-                                println!("write detected");
-                                let contents = fs::read_to_string("./vol_store").expect("Something went wrong reading the file");
-                                let volume = contents.parse::<u16>();
-                                match volume {
-                                    Ok(num)  => {
-                                        println!("Parsed volume from file {}", num);
-                                        self.set_volume(num)
-                                    },
-                                    Err(e) =>  println!("Could not parse volume from file!: {}. Contents: {}", e, contents),
-                                };
-
-                            },
-                            _ => {},
-                        }
-                   },
-                   Err(_e) => {},
-                }
-
 
                 match self.player_events.poll() {
                     Ok(Async::NotReady) => (),
@@ -593,6 +563,14 @@ impl SpircTask {
         // an event that belongs to a previous track and only arrives now due to a race
         // condition. In this case we have updated the state already and don't want to
         // mess with it.
+
+        match &event {
+            PlayerEvent::CommandFileChanged { cmd } => {
+                self.handle_command_file_changed(cmd.clone());
+            },
+            _ => (),
+        };
+
         if let Some(play_request_id) = event.get_play_request_id() {
             if Some(play_request_id) == self.play_request_id {
                 match event {
@@ -670,6 +648,20 @@ impl SpircTask {
                 }
             }
         }
+    }
+
+    fn handle_command_file_changed(&mut self, cmd: String) {
+        println!("Spirc got command {}", cmd);
+        let res: Result<ExternalCommandFile, serde_json::Error> = serde_json::from_str(cmd.as_str());
+        match &res {
+            Ok(parsed_cmd) => {
+                self.set_volume(parsed_cmd.volume);
+            },
+            Err(e) => println!("error parsing command: {:?}", e),
+        }
+
+
+
     }
 
     fn handle_frame(&mut self, frame: Frame) {

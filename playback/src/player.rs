@@ -5,9 +5,11 @@ use std;
 use std::borrow::Cow;
 use std::cmp::max;
 use std::io::{Read, Result, Seek, SeekFrom};
-use std::{mem};
+use std::{mem, fs};
 use std::thread;
 use std::time::{Duration, Instant};
+use notify::{Watcher, RecursiveMode, watcher, RecommendedWatcher, DebouncedEvent};
+use std::sync::mpsc::{channel, Receiver};
 
 use crate::config::{Bitrate, PlayerConfig};
 use librespot_core::session::Session;
@@ -46,6 +48,9 @@ struct PlayerInternal {
     session: Session,
     config: PlayerConfig,
     commands: futures::sync::mpsc::UnboundedReceiver<PlayerCommand>,
+
+    volume_watcher: RecommendedWatcher,
+    external_volume_event: Receiver<DebouncedEvent>,
 
     state: PlayerState,
     preload: PlayerPreload,
@@ -88,6 +93,9 @@ pub enum PlayerEvent {
         play_request_id: u64,
         track_id: SpotifyId,
         position_ms: u32,
+    },
+    CommandFileChanged {
+        cmd: String
     },
     // Same as started but in the case that the player already had a track loaded.
     // The player was either playing the loaded track or it was paused.
@@ -177,7 +185,7 @@ impl PlayerEvent {
             | Stopped {
                 play_request_id, ..
             } => Some(*play_request_id),
-            Changed { .. } | Preloading { .. } | VolumeSet { .. } => None,
+            Changed { .. } | CommandFileChanged { .. } | Preloading { .. } | VolumeSet { .. } => None,
         }
     }
 }
@@ -247,10 +255,17 @@ impl Player {
         let handle = thread::spawn(move || {
             debug!("new Player[{}]", session.session_id());
 
+            let (tx, rx) = channel();
+            let mut watcher = watcher(tx, Duration::from_secs(2)).unwrap();
+            watcher.watch("./vol_store", RecursiveMode::Recursive).unwrap();
+
             let internal = PlayerInternal {
                 session: session,
                 config: config,
                 commands: cmd_rx,
+
+                volume_watcher: watcher,
+                external_volume_event: rx,
 
                 state: PlayerState::Stopped,
                 preload: PlayerPreload::None,
@@ -758,6 +773,22 @@ impl Future for PlayerInternal {
                 Ok(Async::NotReady) => None,
                 Err(_) => None,
             };
+
+            match self.external_volume_event.try_recv() {
+                   Ok(event) => {
+                        match event {
+                            DebouncedEvent::NoticeWrite(_path) => {
+                                println!("write detected");
+                                let contents = fs::read_to_string("./vol_store").expect("Something went wrong reading the file");
+                                self.send_event(PlayerEvent::CommandFileChanged {
+                                    cmd: contents,
+                                })
+                            },
+                            _ => {},
+                        }
+                   },
+                   Err(_e) => {},
+                }
 
             if let Some(cmd) = cmd {
                 self.handle_command(cmd);
